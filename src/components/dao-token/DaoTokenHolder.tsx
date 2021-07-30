@@ -3,7 +3,6 @@ import {useCallback, useEffect, useState} from 'react';
 import FadeIn from '../../components/common/FadeIn';
 import {useWeb3Modal} from '../../components/web3/hooks';
 import {useTokenHolderBalances} from './hooks';
-
 import {formatNumber} from '../../util/helpers';
 import {ETHERSCAN_URLS} from '../../config';
 
@@ -17,6 +16,7 @@ type DaoTokenHolderProps = {
   backgroundColor?: string;
   border?: string;
   color?: string;
+  customStyles?: Record<string, string>;
 };
 
 const image = `${window.location.origin}/favicon.ico`;
@@ -34,19 +34,28 @@ const toDataURL = (url: string) =>
         })
     );
 
-export default function DaoTokenHolder(
-  badgeStyles: DaoTokenHolderProps
-): JSX.Element {
+export default function DaoTokenHolder({
+  customStyles,
+  ...badgeStyles
+}: DaoTokenHolderProps): JSX.Element {
+  /**
+   * State
+   */
+
   const [tokenHolder, setTokenHolder] = useState<ERC20HolderDetails>();
   const [tokenImageUrl, setTokenImageURL] = useState<string | undefined>();
   const [tokenEtherscanURL, setTokenEtherscanURL] = useState<string>('');
 
   /**
-   * Hooks
+   * Our hooks
    */
 
   const {tokenHolderBalances} = useTokenHolderBalances();
   const {account, networkId} = useWeb3Modal();
+
+  /**
+   * Cached callbacks
+   */
 
   const getTokenImageCallback = useCallback(getTokenImage, []);
 
@@ -108,7 +117,7 @@ export default function DaoTokenHolder(
           rel="noopener noreferrer"
           target="_blank"
           href={tokenEtherscanURL}
-          style={{...badgeStyles}}>
+          style={{...badgeStyles, ...customStyles}}>
           <span className="daotokenholder__balance">
             {formatNumber(tokenHolder.balance)}
           </span>

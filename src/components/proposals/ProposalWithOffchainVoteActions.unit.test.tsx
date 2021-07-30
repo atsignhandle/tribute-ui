@@ -1,15 +1,45 @@
 import {render, screen, waitFor} from '@testing-library/react';
+import Web3 from 'web3';
 
+import {AsyncStatus} from '../../util/types';
 import {ContractAdapterNames} from '../web3/types';
-import {DEFAULT_ETH_ADDRESS} from '../../test/helpers';
+import {DEFAULT_ETH_ADDRESS, FakeHttpProvider} from '../../test/helpers';
 import {ProposalData, ProposalFlowStatus} from './types';
 import {VotingAdapterName} from '../adapters-extensions/enums';
-import * as getDAOConfigEntryToMock from '../web3/helpers/getDAOConfigEntry';
+import * as useOffchainVotingResultsToMock from './hooks/useOffchainVotingResults';
 import * as useProposalWithOffchainVoteStatusToMock from './hooks/useProposalWithOffchainVoteStatus';
 import ProposalWithOffchainVoteActions from './ProposalWithOffchainVoteActions';
 import Wrapper from '../../test/Wrapper';
 
+/**
+ * @todo Instead of mocking away the hooks in the case of efficiency (e.g. `useProposalWithOffchainVoteStatus`),
+ *   with the exception of `useDaoConfigurations`, we should use more complete snapshot
+ *   draft and proposal data to provide to the hooks, and use `FakeHttpProvider` to mock their results.
+ */
 describe('ProposalWithOffchainVoteActions component unit tests', () => {
+  function mockDaoConfigResults({
+    mockWeb3Provider,
+    web3Instance,
+  }: {
+    mockWeb3Provider: FakeHttpProvider;
+    web3Instance: Web3;
+  }) {
+    mockWeb3Provider.injectResult(
+      web3Instance.eth.abi.encodeParameters(
+        ['uint256', 'bytes[]'],
+        [
+          0,
+          [
+            // ContractDAOConfigKeys.offchainVotingVotingPeriod
+            web3Instance.eth.abi.encodeParameter('uint256', '120'),
+            // ContractDAOConfigKeys.offchainVotingGracePeriod
+            web3Instance.eth.abi.encodeParameter('uint256', '60'),
+          ],
+        ]
+      )
+    );
+  }
+
   test('should render default submit action', async () => {
     const mock = jest
       .spyOn(
@@ -20,12 +50,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.Submit,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -52,56 +88,7 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
 
       // @note The submit action uses the text "Sponsor" for its button
       expect(
-        screen.getByRole('button', {name: /sponsor/i})
-      ).toBeInTheDocument();
-    });
-
-    // Restore mock
-    mock.mockRestore();
-  });
-
-  test('should render default sponsor action', async () => {
-    const mock = jest
-      .spyOn(
-        useProposalWithOffchainVoteStatusToMock,
-        'useProposalWithOffchainVoteStatus'
-      )
-      .mockImplementation(() => ({
-        status: ProposalFlowStatus.Sponsor,
-        daoProposal: undefined,
-        daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
-        proposalFlowStatusError: undefined,
-      }));
-
-    render(
-      <Wrapper useInit useWallet>
-        <ProposalWithOffchainVoteActions
-          adapterName={ContractAdapterNames.onboarding}
-          proposal={
-            {
-              snapshotDraft: {
-                msg: {
-                  payload: {
-                    name: 'Good Title',
-                    body: 'Coolness',
-                    metadata: {},
-                  },
-                  timestamp: Date.now().toString(),
-                },
-              },
-            } as ProposalData
-          }
-        />
-      </Wrapper>
-    );
-
-    await waitFor(() => {
-      // Status should not show
-      expect(() => screen.getAllByText(/0%/i)).toThrow();
-
-      expect(
-        screen.getByRole('button', {name: /sponsor/i})
+        screen.getByRole('button', {name: /^sponsor$/i})
       ).toBeInTheDocument();
     });
 
@@ -119,12 +106,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVoting,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -150,10 +143,11 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       expect(screen.getAllByText(/0%/i).length).toBe(2);
 
       expect(
-        screen.getByRole('button', {name: /vote yes/i})
+        screen.getByRole('button', {name: /^vote yes$/i})
       ).toBeInTheDocument();
+
       expect(
-        screen.getByRole('button', {name: /vote no/i})
+        screen.getByRole('button', {name: /^vote no$/i})
       ).toBeInTheDocument();
     });
 
@@ -161,8 +155,8 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
     mock.mockRestore();
   });
 
-  test('should render default off-chain submit result action', async () => {
-    const mock = jest
+  test('should render default off-chain submit result action for passing vote', async () => {
+    const useProposalWithOffchainVoteStatusMock = jest
       .spyOn(
         useProposalWithOffchainVoteStatusToMock,
         'useProposalWithOffchainVoteStatus'
@@ -171,8 +165,100 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVotingSubmitResult,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
+      }));
+
+    const useOffchainVotingResultsMock = jest
+      .spyOn(useOffchainVotingResultsToMock, 'useOffchainVotingResults')
+      .mockImplementation(() => ({
+        offchainVotingResults: [
+          [
+            '0xb22ca9af120bfddfc2071b5e86a9edee6e0e2ab76399e7c2d96a9d502f5c1111',
+            {
+              Yes: {percentage: 0.02, units: 200000},
+              No: {percentage: 0.01, units: 100000},
+              totalUnits: 10000000,
+            },
+          ],
+        ],
+        offchainVotingResultsError: undefined,
+        offchainVotingResultsStatus: AsyncStatus.FULFILLED,
+      }));
+
+    render(
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
+        <ProposalWithOffchainVoteActions
+          adapterName={ContractAdapterNames.onboarding}
+          proposal={
+            {
+              snapshotProposal: {
+                msg: {
+                  payload: {
+                    name: 'Good Title',
+                    body: 'Coolness',
+                    metadata: {},
+                  },
+                  timestamp: Date.now().toString(),
+                },
+              },
+            } as ProposalData
+          }
+        />
+      </Wrapper>
+    );
+
+    await waitFor(() => {
+      // Status
+      expect(screen.getAllByText(/2%/i).length).toBe(1);
+      expect(screen.getAllByText(/1%/i).length).toBe(1);
+
+      expect(
+        screen.getByRole('button', {name: /^submit vote result$/i})
+      ).toBeInTheDocument();
+    });
+
+    // Restore mocks
+    useProposalWithOffchainVoteStatusMock.mockRestore();
+    useOffchainVotingResultsMock.mockRestore();
+  });
+
+  test('should not render off-chain submit result action for failing vote', async () => {
+    const useProposalWithOffchainVoteStatusMock = jest
+      .spyOn(
+        useProposalWithOffchainVoteStatusToMock,
+        'useProposalWithOffchainVoteStatus'
+      )
+      .mockImplementation(() => ({
+        status: ProposalFlowStatus.OffchainVotingSubmitResult,
+        daoProposal: undefined,
+        daoProposalVoteResult: undefined,
+        daoProposalVote: undefined,
+        proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
+      }));
+
+    const useOffchainVotingResultsMock = jest
+      .spyOn(useOffchainVotingResultsToMock, 'useOffchainVotingResults')
+      .mockImplementation(() => ({
+        offchainVotingResults: [
+          [
+            '0xb22ca9af120bfddfc2071b5e86a9edee6e0e2ab76399e7c2d96a9d502f5c1111',
+            {
+              Yes: {percentage: 0.01, units: 100000},
+              No: {percentage: 0.02, units: 200000},
+              totalUnits: 10000000,
+            },
+          ],
+        ],
+        offchainVotingResultsError: undefined,
+        offchainVotingResultsStatus: AsyncStatus.FULFILLED,
       }));
 
     render(
@@ -199,15 +285,158 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
 
     await waitFor(() => {
       // Status
-      expect(screen.getAllByText(/0%/i).length).toBe(2);
+      expect(screen.getAllByText(/1%/i).length).toBe(1);
+      expect(screen.getAllByText(/2%/i).length).toBe(1);
 
-      expect(
+      expect(() =>
         screen.getByRole('button', {name: /submit vote result/i})
-      ).toBeInTheDocument();
+      ).toThrow();
     });
 
-    // Restore mock
-    mock.mockRestore();
+    // Restore mocks
+    useProposalWithOffchainVoteStatusMock.mockRestore();
+    useOffchainVotingResultsMock.mockRestore();
+  });
+
+  test('should not render off-chain submit result action until vote tallies fulfilled', async () => {
+    const proposal = {
+      snapshotProposal: {
+        msg: {
+          payload: {
+            name: 'Good Title',
+            body: 'Coolness',
+            metadata: {},
+          },
+          timestamp: Date.now().toString(),
+        },
+      },
+    } as ProposalData;
+
+    const useProposalWithOffchainVoteStatusMock = jest
+      .spyOn(
+        useProposalWithOffchainVoteStatusToMock,
+        'useProposalWithOffchainVoteStatus'
+      )
+      .mockImplementation(() => ({
+        status: ProposalFlowStatus.OffchainVotingSubmitResult,
+        daoProposal: undefined,
+        daoProposalVoteResult: undefined,
+        daoProposalVote: undefined,
+        proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
+      }));
+
+    const useOffchainVotingResultsMock = jest
+      .spyOn(useOffchainVotingResultsToMock, 'useOffchainVotingResults')
+      .mockImplementation(() => ({
+        offchainVotingResults: [
+          [
+            '0xb22ca9af120bfddfc2071b5e86a9edee6e0e2ab76399e7c2d96a9d502f5c1111',
+            {
+              Yes: {percentage: 0.01, units: 100000},
+              No: {percentage: 0.02, units: 200000},
+              totalUnits: 10000000,
+            },
+          ],
+        ],
+        offchainVotingResultsError: undefined,
+        offchainVotingResultsStatus: AsyncStatus.PENDING,
+      }));
+
+    render(
+      <Wrapper useInit useWallet>
+        <ProposalWithOffchainVoteActions
+          adapterName={ContractAdapterNames.onboarding}
+          proposal={proposal}
+        />
+      </Wrapper>
+    );
+
+    await waitFor(() => {
+      // Status
+      expect(screen.getAllByText(/1%/i).length).toBe(1);
+      expect(screen.getAllByText(/2%/i).length).toBe(1);
+
+      expect(() =>
+        screen.getByRole('button', {name: /submit vote result/i})
+      ).toThrow();
+    });
+    // Restore mocks
+    useProposalWithOffchainVoteStatusMock.mockRestore();
+    useOffchainVotingResultsMock.mockRestore();
+  });
+
+  test('should call `stopPollingForStatus` if off-chain submit result action and failing vote', async () => {
+    const stopPollingForStatusSpy = jest.fn();
+
+    const useProposalWithOffchainVoteStatusMock = jest
+      .spyOn(
+        useProposalWithOffchainVoteStatusToMock,
+        'useProposalWithOffchainVoteStatus'
+      )
+      .mockImplementation(() => ({
+        status: ProposalFlowStatus.OffchainVotingSubmitResult,
+        daoProposal: undefined,
+        daoProposalVoteResult: undefined,
+        daoProposalVote: undefined,
+        proposalFlowStatusError: undefined,
+        stopPollingForStatus: stopPollingForStatusSpy,
+      }));
+
+    const useOffchainVotingResultsMock = jest
+      .spyOn(useOffchainVotingResultsToMock, 'useOffchainVotingResults')
+      .mockImplementation(() => ({
+        offchainVotingResults: [
+          [
+            '0xb22ca9af120bfddfc2071b5e86a9edee6e0e2ab76399e7c2d96a9d502f5c1111',
+            {
+              Yes: {percentage: 0.01, units: 100000},
+              No: {percentage: 0.02, units: 200000},
+              totalUnits: 10000000,
+            },
+          ],
+        ],
+        offchainVotingResultsError: undefined,
+        offchainVotingResultsStatus: AsyncStatus.FULFILLED,
+      }));
+
+    render(
+      <Wrapper useInit useWallet>
+        <ProposalWithOffchainVoteActions
+          adapterName={ContractAdapterNames.onboarding}
+          proposal={
+            {
+              snapshotProposal: {
+                msg: {
+                  payload: {
+                    name: 'Good Title',
+                    body: 'Coolness',
+                    metadata: {},
+                  },
+                  timestamp: Date.now().toString(),
+                },
+              },
+            } as ProposalData
+          }
+        />
+      </Wrapper>
+    );
+
+    await waitFor(() => {
+      // Status
+      expect(screen.getAllByText(/1%/i).length).toBe(1);
+      expect(screen.getAllByText(/2%/i).length).toBe(1);
+
+      expect(() =>
+        screen.getByRole('button', {name: /submit vote result/i})
+      ).toThrow();
+    });
+
+    expect(stopPollingForStatusSpy.mock.calls.length).toBe(1);
+
+    // Restore mocks
+    useProposalWithOffchainVoteStatusMock.mockRestore();
+    useOffchainVotingResultsMock.mockRestore();
   });
 
   test('should render default process action when in grace period', async () => {
@@ -220,20 +449,20 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVotingGracePeriod,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: {
-          gracePeriodStartingTime: Math.floor(
-            (Date.now() - 1000) / 1000
-          ).toString(),
+        daoProposalVote: {
+          gracePeriodStartingTime: Math.floor(Date.now() / 1000).toString(),
         } as any,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
-    const gracePeriodLengthMock = jest
-      .spyOn(getDAOConfigEntryToMock, 'getDAOConfigEntry')
-      .mockImplementation(() => Promise.resolve('123'));
-
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -254,82 +483,24 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       </Wrapper>
     );
 
+    // Button
     await waitFor(() => {
       expect(
         screen.getByRole('button', {name: /^process$/i})
       ).toBeInTheDocument();
     });
 
-    await waitFor(() => {
-      // Status
-      expect(screen.getByText(/grace period ends:/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/0%/i).length).toBe(2);
-    });
-
-    // Restore mocks
-    useHookMock.mockRestore();
-    gracePeriodLengthMock.mockRestore();
-  });
-
-  test('should render default process action when in grace period and vote result skipped (i.e. no votes)', async () => {
-    const useHookMock = jest
-      .spyOn(
-        useProposalWithOffchainVoteStatusToMock,
-        'useProposalWithOffchainVoteStatus'
-      )
-      .mockImplementation(() => ({
-        status: ProposalFlowStatus.OffchainVotingGracePeriod,
-        daoProposal: undefined,
-        daoProposalVoteResult: undefined,
-        daoProposalVotes: {
-          // Set to `"0"` to mimic on-chain response when no result submitted
-          gracePeriodStartingTime: '0',
-        } as any,
-        proposalFlowStatusError: undefined,
-      }));
-
-    const gracePeriodLengthMock = jest
-      .spyOn(getDAOConfigEntryToMock, 'getDAOConfigEntry')
-      .mockImplementation(() => Promise.resolve('123'));
-
-    render(
-      <Wrapper useInit useWallet>
-        <ProposalWithOffchainVoteActions
-          // Using a different name than `onboarding` as it has a custom process action
-          adapterName={ContractAdapterNames.onboarding}
-          proposal={
-            {
-              snapshotProposal: {
-                msg: {
-                  payload: {
-                    name: 'Good Title',
-                    body: 'Coolness',
-                    metadata: {},
-                  },
-                  timestamp: Date.now().toString(),
-                },
-              },
-            } as ProposalData
-          }
-        />
-      </Wrapper>
+    // Status
+    await waitFor(
+      () => {
+        expect(screen.getByText(/^grace period:/i)).toBeInTheDocument();
+        expect(screen.getAllByText(/0%/i).length).toBe(2);
+      },
+      {timeout: 5000}
     );
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', {name: /process/i})
-      ).toBeInTheDocument();
-    });
-
-    await waitFor(() => {
-      // Status
-      expect(screen.getByText(/grace period ends:/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/0%/i).length).toBe(2);
-    });
-
     // Restore mocks
     useHookMock.mockRestore();
-    gracePeriodLengthMock.mockRestore();
   });
 
   test('should render default process action', async () => {
@@ -342,12 +513,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.Process,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -391,12 +568,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.Completed,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           // Using a different name than `onboarding` as it has a custom process action
           adapterName={ContractAdapterNames.onboarding}
@@ -422,15 +605,15 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       // Status
       expect(screen.getAllByText(/0%/i).length).toBe(2);
 
-      expect(() => screen.getByRole('button', {name: /sponsor/i})).toThrow();
+      expect(() => screen.getByRole('button', {name: /^sponsor$/i})).toThrow();
 
       expect(() =>
-        screen.getByRole('button', {name: /submit vote result/i})
+        screen.getByRole('button', {name: /^submit vote result$/i})
       ).toThrow();
 
-      expect(() => screen.getByRole('button', {name: /vote yes/i})).toThrow();
-      expect(() => screen.getByRole('button', {name: /vote no/i})).toThrow();
-      expect(() => screen.getByRole('button', {name: /process/i})).toThrow();
+      expect(() => screen.getByRole('button', {name: /^vote yes$/i})).toThrow();
+      expect(() => screen.getByRole('button', {name: /^vote no$/i})).toThrow();
+      expect(() => screen.getByRole('button', {name: /^process$/i})).toThrow();
     });
 
     // Restore mock
@@ -447,12 +630,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVoting,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -489,7 +678,7 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       expect(screen.getAllByText(/0%/i).length).toBe(2);
 
       expect(
-        screen.getByRole('button', {name: /some awesome action/i})
+        screen.getByRole('button', {name: /^some awesome action$/i})
       ).toBeInTheDocument();
     });
 
@@ -507,12 +696,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVoting,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -551,10 +746,11 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       expect(screen.getAllByText(/0%/i).length).toBe(2);
 
       expect(() =>
-        screen.getByRole('button', {name: /some awesome action/i})
+        screen.getByRole('button', {name: /^some awesome action$/i})
       ).toThrow();
-      expect(() => screen.getByRole('button', {name: /vote yes/i})).toThrow();
-      expect(() => screen.getByRole('button', {name: /vote no/i})).toThrow();
+
+      expect(() => screen.getByRole('button', {name: /^vote yes$/i})).toThrow();
+      expect(() => screen.getByRole('button', {name: /^vote no$/i})).toThrow();
     });
 
     // Restore mock
@@ -571,12 +767,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: ProposalFlowStatus.OffchainVoting,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: undefined,
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -613,10 +815,11 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
       expect(screen.getAllByText(/0%/i).length).toBe(2);
 
       expect(
-        screen.getByRole('button', {name: /vote yes/i})
+        screen.getByRole('button', {name: /^vote yes$/i})
       ).toBeInTheDocument();
+
       expect(
-        screen.getByRole('button', {name: /vote no/i})
+        screen.getByRole('button', {name: /^vote no$/i})
       ).toBeInTheDocument();
     });
 
@@ -634,12 +837,18 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
         status: undefined,
         daoProposal: undefined,
         daoProposalVoteResult: undefined,
-        daoProposalVotes: undefined,
+        daoProposalVote: undefined,
         proposalFlowStatusError: new Error('Something bad happened.'),
+        stopPollingForStatus: () => {},
       }));
 
     render(
-      <Wrapper useInit useWallet>
+      <Wrapper
+        useInit
+        useWallet
+        getProps={({mockWeb3Provider, web3Instance}) => {
+          mockDaoConfigResults({mockWeb3Provider, web3Instance});
+        }}>
         <ProposalWithOffchainVoteActions
           adapterName={ContractAdapterNames.onboarding}
           proposal={
@@ -666,7 +875,10 @@ describe('ProposalWithOffchainVoteActions component unit tests', () => {
           /something went wrong while getting the proposal's status/i
         )
       ).toBeInTheDocument();
-      expect(screen.getByText(/something bad happened/i)).toBeInTheDocument();
+
+      expect(
+        screen.getByText(/^something bad happened.$/i)
+      ).toBeInTheDocument();
     });
 
     // Restore mock

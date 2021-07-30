@@ -1,9 +1,8 @@
 import {useCallback, useEffect, useState} from 'react';
+import {useSelector} from 'react-redux';
 import {useLazyQuery} from '@apollo/react-hooks';
 
 import {StoreState} from '../../../store/types';
-import {useSelector} from 'react-redux';
-
 import {GET_TOKEN_HOLDER_BALANCES} from '../../../gql';
 
 type UseTokenHolderBalancesReturn = {
@@ -24,22 +23,36 @@ export function useTokenHolderBalances(): UseTokenHolderBalancesReturn {
    */
 
   const erc20ExtensionContract = useSelector(
-    (state: StoreState) => state.contracts?.ERC20ExtensionContract
+    (s: StoreState) => s.contracts?.ERC20ExtensionContract
   );
 
-  const [getTokenHolderBalances, {called, loading, data, error}] = useLazyQuery(
-    GET_TOKEN_HOLDER_BALANCES,
-    {
-      variables: {
-        tokenAddress: erc20ExtensionContract?.contractAddress.toLowerCase(),
-      },
-    }
-  );
+  const connectedMember = useSelector((s: StoreState) => s.connectedMember);
+
+  /**
+   * GQL Query
+   */
+
+  const [
+    getTokenHolderBalances,
+    {called, loading, data, error, startPolling, stopPolling},
+  ] = useLazyQuery(GET_TOKEN_HOLDER_BALANCES, {
+    variables: {
+      tokenAddress: erc20ExtensionContract?.contractAddress.toLowerCase(),
+    },
+  });
+
+  /**
+   * State
+   */
 
   const [tokenHolderBalances, setTokenHolderBalances] = useState<
     Record<string, any> | undefined
   >();
   const [gqlError, setGqlError] = useState<Error>();
+
+  /**
+   * Cached callbacks
+   */
 
   const getTokenBalanceCallback = useCallback(getTokenBalance, [
     erc20ExtensionContract?.contractAddress,
@@ -47,6 +60,10 @@ export function useTokenHolderBalances(): UseTokenHolderBalancesReturn {
     error,
     loading,
   ]);
+
+  /**
+   * Effects
+   */
 
   useEffect(() => {
     if (!called) {
@@ -63,6 +80,31 @@ export function useTokenHolderBalances(): UseTokenHolderBalancesReturn {
     getTokenBalanceCallback,
     loading,
   ]);
+
+  // When the `SET_CONNECTED_MEMBER` redux action is dispatched in other
+  // components (to refetch the connected user's member status info) the
+  // `useSelector` hook above will return a new `connectedMember` object. By
+  // default, the `useEffect` hook uses a strict equality comparison which will
+  // consider the new object a changed value (even if the individual fields are
+  // the same from the previous `connectedMember` store state). This change is
+  // used to trigger a refresh of the `GET_TOKEN_HOLDER_BALANCES` query result
+  // so any change to the connected token holder's balance can be shown in the
+  // nav badge without having to do a page reload.
+  useEffect(() => {
+    // a single refetch may not be enough to catch any token balance change so
+    // we poll but only for a short time period
+    connectedMember && startPolling && startPolling(2000);
+
+    const pollingTimeoutId = stopPolling && setTimeout(stopPolling, 10000);
+
+    return function cleanup() {
+      pollingTimeoutId && clearTimeout(pollingTimeoutId);
+    };
+  }, [connectedMember, startPolling, stopPolling]);
+
+  /**
+   * Functions
+   */
 
   function getTokenBalance() {
     try {

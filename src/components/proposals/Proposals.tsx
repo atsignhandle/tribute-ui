@@ -4,14 +4,21 @@ import {
   DaoAdapterConstants,
   VotingAdapterName,
 } from '../adapters-extensions/enums';
+import {
+  calculateVotingTimeRanges,
+  proposalHasFlag,
+  proposalHasVotingState,
+} from './helpers';
 import {AsyncStatus} from '../../util/types';
 import {BURN_ADDRESS} from '../../util/constants';
+import {ContractDAOConfigKeys} from '../web3/types';
+import {normalizeString} from '../../util/helpers';
 import {OffchainVotingStatus} from './voting';
 import {ProposalData, ProposalFlag} from './types';
-import {proposalHasFlag, proposalHasVotingState} from './helpers';
 import {ProposalHeaderNames} from '../../util/enums';
+import {useDaoConfigurations} from '../../hooks';
 import {useIsDefaultChain} from '../web3/hooks';
-import {useProposals} from './hooks';
+import {useProposals, useOffchainVotingResults} from './hooks';
 import {VotingState} from './voting/types';
 import ErrorMessageWithDetails from '../common/ErrorMessageWithDetails';
 import LoaderLarge from '../feedback/LoaderLarge';
@@ -47,6 +54,11 @@ type FilteredProposals = {
   votingProposals: ProposalData[];
 };
 
+const configurationKeysToGet: ContractDAOConfigKeys[] = [
+  ContractDAOConfigKeys.offchainVotingVotingPeriod,
+  ContractDAOConfigKeys.offchainVotingGracePeriod,
+];
+
 export default function Proposals(props: ProposalsProps): JSX.Element {
   const {
     adapterName,
@@ -59,6 +71,10 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
   /**
    * State
    */
+
+  const [proposalsForVotingResults, setProposalsForVotingResults] = useState<
+    ProposalData['snapshotProposal'][]
+  >([]);
 
   const [filteredProposals, setFilteredProposals] = useState<FilteredProposals>(
     {
@@ -73,10 +89,20 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
    * Our hooks
    */
 
+  const {
+    daoConfigurations: [offchainVotingPeriod, offchainGracePeriod],
+  } = useDaoConfigurations(configurationKeysToGet);
+
   const {proposals, proposalsError, proposalsStatus} = useProposals({
     adapterName,
     includeProposalsExistingOnlyOffchain,
   });
+
+  const {
+    offchainVotingResults,
+    offchainVotingResultsError,
+    offchainVotingResultsStatus,
+  } = useOffchainVotingResults(proposalsForVotingResults);
 
   const {defaultChainError} = useIsDefaultChain();
 
@@ -93,13 +119,23 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
 
   const isLoading: boolean =
     proposalsStatus === AsyncStatus.STANDBY ||
-    proposalsStatus === AsyncStatus.PENDING;
+    proposalsStatus === AsyncStatus.PENDING ||
+    // Getting ready to fetch using `useOffchainVotingResults`; helps to show
+    // continuous loader.
+    (offchainVotingResultsStatus === AsyncStatus.STANDBY &&
+      proposalsForVotingResults.length > 0) ||
+    offchainVotingResultsStatus === AsyncStatus.PENDING;
 
-  const error: Error | undefined = proposalsError || defaultChainError;
+  const error: Error | undefined =
+    proposalsError || offchainVotingResultsError || defaultChainError;
 
   /**
    * Effects
    */
+
+  useEffect(() => {
+    setProposalsForVotingResults(proposals.map((p) => p.snapshotProposal));
+  }, [proposals]);
 
   // Separate proposals into categories: non-sponsored, voting, passed, failed
   useEffect(() => {
@@ -116,7 +152,7 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
       const {
         daoProposal,
         daoProposalVotingState: voteState,
-        daoProposalVotes: votesData,
+        daoProposalVote: votesData,
       } = p;
 
       if (!daoProposal) return;
@@ -125,7 +161,8 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
 
       const offchainResultNotYetSubmitted: boolean =
         voteState !== undefined &&
-        proposalHasVotingState(VotingState.TIE, voteState) &&
+        (proposalHasVotingState(VotingState.GRACE_PERIOD, voteState) ||
+          proposalHasVotingState(VotingState.TIE, voteState)) &&
         proposalHasFlag(ProposalFlag.SPONSORED, daoProposal.flags) &&
         votesData?.OffchainVotingContract?.reporter === BURN_ADDRESS;
 
@@ -152,13 +189,32 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
         return;
       }
 
+      const offchainResult = offchainVotingResults.find(
+        ([proposalHash, _result]) =>
+          normalizeString(proposalHash) ===
+          normalizeString(p.snapshotProposal?.idInDAO || '')
+      )?.[1];
+
+      if (!offchainResult) return;
+
+      // Did the vote pass by a simple majority?
+      const didPass = offchainResult.Yes.units > offchainResult.No.units;
+
       /**
-       * Voting proposal: voting has ended and is not in grace period,
-       * off-chain result was not submitted, and there are votes (need to submit to get true result).
+       * Voting proposal: voting has ended, off-chain result was not submitted,
+       * and there are votes with a passing result (need to submit to get true
+       * "passed" result).
        *
+       * @note For now, we can assume across all adapters that if the vote did
+       * not pass then the result does not need to be submitted (proposal would
+       * fall back to "failed" logic).
        * @note Should be placed before "failed" logic.
        */
-      if (offchainResultNotYetSubmitted && noSnapshotVotes === false) {
+      if (
+        offchainResultNotYetSubmitted &&
+        noSnapshotVotes === false &&
+        didPass
+      ) {
         filteredProposalsToSet.votingProposals.push(p);
 
         return;
@@ -180,11 +236,19 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
       // Failed proposal: no Snapshot votes
       if (
         voteState !== undefined &&
-        (proposalHasVotingState(VotingState.GRACE_PERIOD, voteState) ||
-          proposalHasVotingState(VotingState.TIE, voteState)) &&
-        proposalHasFlag(ProposalFlag.SPONSORED, daoProposal.flags) &&
         offchainResultNotYetSubmitted &&
         noSnapshotVotes
+      ) {
+        filteredProposalsToSet.failedProposals.push(p);
+
+        return;
+      }
+
+      // Failed proposal: result not submitted; vote did not pass
+      if (
+        voteState !== undefined &&
+        offchainResultNotYetSubmitted &&
+        !didPass
       ) {
         filteredProposalsToSet.failedProposals.push(p);
 
@@ -208,7 +272,12 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
       ...prevState,
       ...filteredProposalsToSet,
     }));
-  }, [includeProposalsExistingOnlyOffchain, proposals, proposalsStatus]);
+  }, [
+    includeProposalsExistingOnlyOffchain,
+    offchainVotingResults,
+    proposals,
+    proposalsStatus,
+  ]);
 
   /**
    * Functions
@@ -218,12 +287,46 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
     proposals: ProposalData[]
   ): React.ReactNode | null {
     return proposals.map((proposal) => {
-      const proposalId =
-        proposal.snapshotDraft?.idInDAO || proposal.snapshotProposal?.idInDAO;
-      const proposalName =
-        proposal.snapshotDraft?.msg.payload.name ||
-        proposal.snapshotProposal?.msg.payload.name ||
-        '';
+      const {
+        daoProposalVote,
+        daoProposalVotingAdapter,
+        snapshotDraft,
+        snapshotProposal,
+      } = proposal;
+
+      const proposalId = snapshotDraft?.idInDAO || snapshotProposal?.idInDAO;
+      const votingAdapterName = daoProposalVotingAdapter?.votingAdapterName;
+
+      let gracePeriodEndMs: number = 0;
+      let gracePeriodStartMs: number = 0;
+      let voteEndMs: number = 0;
+      let voteStartMs: number = 0;
+
+      switch (votingAdapterName) {
+        case VotingAdapterName.OffchainVotingContract:
+          const {startingTime, gracePeriodStartingTime} =
+            daoProposalVote?.[VotingAdapterName.OffchainVotingContract] || {};
+
+          const times = calculateVotingTimeRanges({
+            gracePeriodLength: offchainGracePeriod,
+            gracePeriodStartingTime,
+            votePeriodLength: offchainVotingPeriod,
+            voteStartingTime: startingTime,
+          });
+
+          gracePeriodEndMs = times.gracePeriodEndMs;
+          gracePeriodStartMs = times.gracePeriodStartMs;
+          voteEndMs = times.voteEndMs;
+          voteStartMs = times.voteStartMs;
+
+          break;
+
+        // @todo On-chain Voting
+        // case VotingAdapterName.VotingContract:
+        //   return <></>
+        default:
+          break;
+      }
 
       if (!proposalId) return null;
 
@@ -235,6 +338,16 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
         );
       }
 
+      const proposalName =
+        snapshotDraft?.msg.payload.name ||
+        snapshotProposal?.msg.payload.name ||
+        '';
+
+      const votingResult = offchainVotingResults.find(
+        ([proposalHash, _result]) =>
+          normalizeString(proposalHash) === normalizeString(proposalId)
+      )?.[1];
+
       return (
         <ProposalCard
           key={proposalId}
@@ -243,9 +356,17 @@ export default function Proposals(props: ProposalsProps): JSX.Element {
           onClick={onProposalClick}
           proposalOnClickId={proposalId}
           renderStatus={() => {
-            switch (proposal.daoProposalVotingAdapter?.votingAdapterName) {
+            switch (votingAdapterName) {
               case VotingAdapterName.OffchainVotingContract:
-                return <OffchainVotingStatus proposal={proposal} />;
+                return (
+                  <OffchainVotingStatus
+                    countdownGracePeriodEndMs={gracePeriodEndMs}
+                    countdownGracePeriodStartMs={gracePeriodStartMs}
+                    countdownVotingEndMs={voteEndMs}
+                    countdownVotingStartMs={voteStartMs}
+                    votingResult={votingResult}
+                  />
+                );
               // @todo On-chain Voting
               // case VotingAdapterName.VotingContract:
               //   return <></>
