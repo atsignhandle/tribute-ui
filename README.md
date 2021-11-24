@@ -1,4 +1,4 @@
-# Tribute DAO DApp
+# [Ted](https://www.youtube.com/watch?v=JqrJ4wGid4Y) DAO DApp
 
 Related supporting repositories:
 
